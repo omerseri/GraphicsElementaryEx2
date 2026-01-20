@@ -107,29 +107,21 @@ def match_features(desc1, desc2, min_score):
     
     scores = np.dot(D1, D2.T) 
     
+    mask_score = scores > min_score
+    
     row_top2_indices = np.argpartition(scores, -2, axis=1)[:, -2:]
+    mask_row = np.zeros_like(scores, dtype=bool)
+    np.put_along_axis(mask_row, row_top2_indices, True, axis=1)
     
     col_top2_indices = np.argpartition(scores, -2, axis=0)[-2:, :]
+    mask_col = np.zeros_like(scores, dtype=bool)
+    np.put_along_axis(mask_col, col_top2_indices, True, axis=0)
     
-    matches_1 = []
-    matches_2 = []
+    final_mask = mask_score & mask_row & mask_col
     
-    for i in range(N1):
-        for j in range(N2):
-            score = scores[i, j]
-            
-            if score < min_score:
-                continue
-                
-            is_row_top = j in row_top2_indices[i]
-            
-            is_col_top = i in col_top2_indices[:, j]
-            
-            if is_row_top and is_col_top:
-                matches_1.append(i)
-                matches_2.append(j)
-                
-    return [np.array(matches_1, dtype=int), np.array(matches_2, dtype=int)]
+    idx1, idx2 = np.where(final_mask)
+    
+    return [idx1.astype(int), idx2.astype(int)]
 
 def apply_homography(pos1, H12):
     """
@@ -355,14 +347,35 @@ def warp_image(image, homography):
     :param homography: homograhpy.
     :return: A warped image.
     """
-    if image.ndim == 2:
-        return warp_channel(image, homography)
+
+    h, w = image.shape[:2]
+    bbox = compute_bounding_box(homography, w, h)
+    x_min, y_min = bbox[0]
+    x_max, y_max = bbox[1]
     
-    layers = []
-    for i in range(3):
-        layers.append(warp_channel(image[:, :, i], homography))
+    dest_w, dest_h = x_max - x_min, y_max - y_min
+    
+    x_range = np.arange(x_min, x_max)
+    y_range = np.arange(y_min, y_max)
+    xv, yv = np.meshgrid(x_range, y_range)
+    
+    dest_points = np.column_stack((xv.flatten(), yv.flatten()))
+    H_inv = np.linalg.inv(homography)
+    src_points = apply_homography(dest_points, H_inv)
+    
+    src_x = src_points[:, 0].reshape(dest_h, dest_w)
+    src_y = src_points[:, 1].reshape(dest_h, dest_w)
+    
+    if image.ndim == 2:
+        output = map_coordinates(image, [src_y, src_x], order=1, prefilter=False)
+    else:
+        warped_channels = []
+        for i in range(3):
+            channel = map_coordinates(image[:, :, i], [src_y, src_x], order=1, prefilter=False)
+            warped_channels.append(channel)
+        output = np.dstack(warped_channels)
         
-    return np.dstack(layers)
+    return np.clip(output, 0, 1)
 
 
 
